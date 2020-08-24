@@ -56,7 +56,8 @@ public class TflitePlugin implements MethodCallHandler {
   private final Registrar mRegistrar;
   private Interpreter tfLite;
   private boolean tfLiteBusy = false;
-  private int inputSize = 0;
+  private int inputWidth = 0;
+  private int inputHeight = 0;
   private Vector<String> labels;
   float[][] labelProb;
   private static final int BYTES_PER_CHANNEL = 4;
@@ -328,18 +329,19 @@ public class TflitePlugin implements MethodCallHandler {
   ByteBuffer feedInputTensor(Bitmap bitmapRaw, float mean, float std) throws IOException {
     Tensor tensor = tfLite.getInputTensor(0);
     int[] shape = tensor.shape();
-    inputSize = shape[1];
+    inputHeight = shape[1];
+    inputWidth = shape[2];
     int inputChannels = shape[3];
 
     int bytePerChannel = tensor.dataType() == DataType.UINT8 ? 1 : BYTES_PER_CHANNEL;
-    ByteBuffer imgData = ByteBuffer.allocateDirect(1 * inputSize * inputSize * inputChannels * bytePerChannel);
+    ByteBuffer imgData = ByteBuffer.allocateDirect(1 * inputWidth * inputHeight * inputChannels * bytePerChannel);
     imgData.order(ByteOrder.nativeOrder());
 
     Bitmap bitmap = bitmapRaw;
-    if (bitmapRaw.getWidth() != inputSize || bitmapRaw.getHeight() != inputSize) {
+    if (bitmapRaw.getWidth() != inputWidth || bitmapRaw.getHeight() != inputHeight) {
       Matrix matrix = getTransformationMatrix(bitmapRaw.getWidth(), bitmapRaw.getHeight(),
-          inputSize, inputSize, false);
-      bitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888);
+          inputWidth, inputHeight, false);
+      bitmap = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888);
       final Canvas canvas = new Canvas(bitmap);
       if (inputChannels == 1){
         Paint paint = new Paint();
@@ -354,8 +356,8 @@ public class TflitePlugin implements MethodCallHandler {
     }
 
     if (tensor.dataType() == DataType.FLOAT32) {
-      for (int i = 0; i < inputSize; ++i) {
-        for (int j = 0; j < inputSize; ++j) {
+      for (int i = 0; i < inputHeight; ++i) {
+        for (int j = 0; j < inputWidth; ++j) {
           int pixelValue = bitmap.getPixel(j, i);
           if (inputChannels > 1){
             imgData.putFloat((((pixelValue >> 16) & 0xFF) - mean) / std);
@@ -367,8 +369,8 @@ public class TflitePlugin implements MethodCallHandler {
         }
       }
     } else {
-      for (int i = 0; i < inputSize; ++i) {
-        for (int j = 0; j < inputSize; ++j) {
+      for (int i = 0; i < inputHeight; ++i) {
+        for (int j = 0; j < inputWidth; ++j) {
           int pixelValue = bitmap.getPixel(j, i);
           if (inputChannels > 1){
             imgData.put((byte) ((pixelValue >> 16) & 0xFF));
@@ -745,9 +747,10 @@ public class TflitePlugin implements MethodCallHandler {
       this.startTime = SystemClock.uptimeMillis();
 
       Tensor tensor = tfLite.getInputTensor(0);
-      inputSize = tensor.shape()[1];
+      inputHeight = tensor.shape()[1];
+      inputWidth = tensor.shape()[2];
 
-      this.gridSize = inputSize / blockSize;
+      this.gridSize = inputWidth / blockSize;
       this.numClasses = labels.size();
       this.output = new float[1][gridSize][gridSize][(numClasses + 5) * numBoxesPerBlock];
     }
@@ -799,14 +802,14 @@ public class TflitePlugin implements MethodCallHandler {
               final float w = (float) (Math.exp(output[0][y][x][offset + 2]) * anchors.get(2 * b + 0)) * blockSize;
               final float h = (float) (Math.exp(output[0][y][x][offset + 3]) * anchors.get(2 * b + 1)) * blockSize;
 
-              final float xmin = Math.max(0, (xPos - w / 2) / inputSize);
-              final float ymin = Math.max(0, (yPos - h / 2) / inputSize);
+              final float xmin = Math.max(0, (xPos - w / 2) / inputWidth);
+              final float ymin = Math.max(0, (yPos - h / 2) / inputHeight);
 
               Map<String, Object> rect = new HashMap<>();
               rect.put("x", xmin);
               rect.put("y", ymin);
-              rect.put("w", Math.min(1 - xmin, w / inputSize));
-              rect.put("h", Math.min(1 - ymin, h / inputSize));
+              rect.put("w", Math.min(1 - xmin, w / inputWidth));
+              rect.put("h", Math.min(1 - ymin, h / inputHeight));
 
               Map<String, Object> ret = new HashMap<>();
               ret.put("rect", rect);
@@ -1320,8 +1323,8 @@ public class TflitePlugin implements MethodCallHandler {
         Map<String, Object> keypoint = new HashMap<>();
         keypoint.put("score", root.get("score"));
         keypoint.put("part", partNames[(int) root.get("partId")]);
-        keypoint.put("y", rootPoint[0] / inputSize);
-        keypoint.put("x", rootPoint[1] / inputSize);
+        keypoint.put("y", rootPoint[0] / inputHeight);
+        keypoint.put("x", rootPoint[1] / inputWidth);
 
         Map<Integer, Map<String, Object>> keypoints = new HashMap<>();
         keypoints.put((int) root.get("partId"), keypoint);
@@ -1444,8 +1447,8 @@ public class TflitePlugin implements MethodCallHandler {
     for (Map<String, Object> pose : poses) {
       Map<Integer, Object> keypoints = (Map<Integer, Object>) pose.get("keypoints");
       Map<String, Object> correspondingKeypoint = (Map<String, Object>) keypoints.get(keypointId);
-      float _x = (float) correspondingKeypoint.get("x") * inputSize - x;
-      float _y = (float) correspondingKeypoint.get("y") * inputSize - y;
+      float _x = (float) correspondingKeypoint.get("x") * inputWidth - x;
+      float _y = (float) correspondingKeypoint.get("y") * inputHeight - y;
       float squaredDistance = _x * _x + _y * _y;
       if (squaredDistance <= squaredNmsRadius)
         return true;
@@ -1464,8 +1467,8 @@ public class TflitePlugin implements MethodCallHandler {
     int height = scores.length;
     int width = scores[0].length;
     int numKeypoints = scores[0][0].length;
-    float sourceKeypointY = (float) sourceKeypoint.get("y") * inputSize;
-    float sourceKeypointX = (float) sourceKeypoint.get("x") * inputSize;
+    float sourceKeypointY = (float) sourceKeypoint.get("y") * inputHeight;
+    float sourceKeypointX = (float) sourceKeypoint.get("x") * inputWidth;
 
     int[] sourceKeypointIndices = getStridedIndexNearPoint(sourceKeypointY, sourceKeypointX,
         outputStride, height, width);
@@ -1504,8 +1507,8 @@ public class TflitePlugin implements MethodCallHandler {
     Map<String, Object> keypoint = new HashMap<>();
     keypoint.put("score", score);
     keypoint.put("part", partNames[targetKeypointId]);
-    keypoint.put("y", targetKeypoint[0] / inputSize);
-    keypoint.put("x", targetKeypoint[1] / inputSize);
+    keypoint.put("y", targetKeypoint[0] / inputHeight);
+    keypoint.put("x", targetKeypoint[1] / inputWidth);
 
     return keypoint;
   }
